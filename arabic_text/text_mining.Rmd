@@ -1,0 +1,274 @@
+---
+title: "Arabic 2702 Final Project"
+author: "Mae"
+date: "April 17, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = T, warning = F, message = F)
+# analysis adapted from
+# http://www.sthda.com/english/wiki/text-mining-and-word-cloud-fundamentals-in-r-5-simple-steps-you-should-know
+# https://uc-r.github.io/word_relationships
+```
+
+```{r load_packages}
+# Load packages
+library(tm)
+library(SnowballC)
+library(wordcloud)
+library(RColorBrewer)
+
+library(tidyverse)      # data manipulation & plotting
+library(stringr)        # text cleaning and regular expressions
+library(tidytext)       # provides additional text mining functions
+
+library(ggplot2)
+library(ggcorrplot)
+```
+
+# Read in Text
+
+I used text files of some of the literature we read in class. All files are English Translations.
+
+```{r load_data}
+titles <- c("Baghdad Syndrome", "Solar Grid", "The Actic Refugee", 
+            "Accidental Transients", 
+            "Season of Migration to the North",
+            "TESTIMONY OF MALIK, PRISONER #287690")
+
+baghdad_syndrome <- paste(readLines('baghdad_syndrome.txt', skipNul = T),
+                          collapse = " ")
+
+solar_grid <- paste(readLines('solar_grid.txt', skipNul = T),
+                          collapse = " ")
+women_of_the_wind <- paste(readLines('women_of_the_wind.txt', skipNul = T),
+                          collapse = " ")
+arctic_refugee <- paste(readLines('arctic_refugee.txt', skipNul = T),
+                          collapse = " ")
+accidental_transients <- paste(readLines('accidental_transients.txt', 
+                                         skipNul = T),
+                          collapse = " ")
+season_of_migration <- paste(readLines('season_of_migration.txt', 
+                                       skipNul = T),
+                          collapse = " ")
+malik_prisoner <- paste(readLines('malik_prisoner.txt', skipNul = T),
+                          collapse = " ")
+
+
+books <- list(baghdad_syndrome, solar_grid, arctic_refugee, accidental_transients,
+           season_of_migration, malik_prisoner)
+  
+series <- tibble()
+
+for (i in seq_along(titles)) {
+        
+        clean <- tibble(
+                        text = books[[i]]) %>%
+             unnest_tokens(bigram, text, token = "ngrams", n = 2) %>%
+             mutate(book = titles[i]) %>%
+             select(book, everything())
+
+        series <- rbind(series, clean)
+}
+
+```
+
+```{r}
+series %>%
+        separate(bigram, c("word1", "word2"), sep = " ") %>%
+        filter(!word1 %in% stop_words$word,
+               !word2 %in% stop_words$word) %>%
+        count(book, word1, word2, sort = TRUE) %>%
+        unite("bigram", c(word1, word2), sep = " ") %>%
+        group_by(book) %>%
+        top_n(5) %>%
+        ungroup() %>%
+        mutate(book = factor(book) %>% forcats::fct_rev()) %>%
+        ggplot(aes(bigram, n, fill = book)) +
+        geom_bar(stat = "identity", alpha = .8, show.legend = FALSE) +
+        facet_wrap(~ book, ncol = 2, scales = "free") +
+        coord_flip()
+```
+```{r}
+AFINN <- get_sentiments("afinn")
+
+for (i in seq_along(titles)) {
+(sentiment <- series %>%
+        filter(book == titles[i]) %>%
+        separate(bigram, c("word1", "word2"), sep = " ") %>%
+        
+        inner_join(AFINN, by = c(word2 = "word")) %>%
+        count(word2, score, sort = TRUE) 
+)
+p <- sentiment %>%
+        mutate(contribution = n * score) %>%
+        arrange(desc(abs(contribution))) %>%
+        head(20) %>%
+        ggplot(aes(reorder(word2, contribution), n * score, fill = n * score > 0)) +
+        geom_bar(stat = "identity", show.legend = FALSE) +
+        xlab("Words from the text") +
+        ylab("Sentiment score * # of occurrances") +
+        ggtitle(titles[i]) +
+        coord_fixed(ratio = 1) +
+        coord_flip()
+plot(p)
+  dev.copy(png, paste('plots/sentiment_',titles[i],'.png', sep = ""))
+  dev.off()
+
+}
+```
+
+```{r}
+negation_words <- c("not", "no", "never", "without")7
+(negated <- series %>%
+                separate(bigram, c("word1", "word2"), sep = " ") %>%
+                filter(word1 %in% negation_words) %>%
+                inner_join(AFINN, by = c(word2 = "word")) %>%
+                count(word1, word2, score, sort = TRUE) %>%
+                ungroup()
+)
+
+negated %>%
+        mutate(contribution = n * score) %>%
+        arrange(desc(abs(contribution))) %>%
+        group_by(word1) %>%
+        top_n(10, abs(contribution)) %>%
+        ggplot(aes(word2, contribution, fill = contribution > 0)) +
+        geom_bar(stat = "identity", show.legend = FALSE) +
+        xlab("Words preceded by 'not'") +
+        ylab("Sentiment score * # of occurrances") +
+        facet_wrap(~ word1, scales = "free") +
+        coord_flip()
+```
+
+```{r}
+library(igraph)
+
+(bigram_graph <- series %>%
+        separate(bigram, c("word1", "word2"), sep = " ") %>%
+        filter(!word1 %in% stop_words$word,
+               !word2 %in% stop_words$word) %>%
+        count(word1, word2, sort = TRUE) %>%
+        unite("bigram", c(word1, word2), sep = " ") %>%
+        filter(n > 2) %>%
+        graph_from_data_frame()
+)
+
+library(ggraph)
+set.seed(1434)
+
+a <- grid::arrow(type = "closed", length = unit(.15, "inches"))
+
+ggraph(bigram_graph, layout = "fr") +
+        geom_edge_link() +
+        geom_node_point(color = "lightblue", size = 5) +
+        geom_node_text(aes(label = name), vjust = 1, hjust = 1) +
+        theme_void()
+```
+
+```{r}
+(ps_words <- tibble(book = titles,
+                  text = books) %>%
+        unnest_tokens(word, text) %>%
+        filter(!word %in% stop_words$word))
+
+library(widyr)
+
+(word_cor <- ps_words %>%
+   group_by(word) %>%
+   filter(n() >= 10) %>%
+   pairwise_cor(word, book) %>%
+   filter(!is.na(correlation)))
+
+word_cor %>%
+  filter(item1 == "baghdad") %>%
+  arrange(desc(correlation))
+
+set.seed(123)
+
+ps_words %>%
+  group_by(word) %>%
+  filter(n() >= 20) %>%
+  pairwise_cor(word, book) %>%
+  filter(!is.na(correlation),
+         correlation > .75) %>%
+  graph_from_data_frame() %>%
+  ggraph(layout = "fr") +
+  geom_edge_link(aes(edge_alpha = correlation), 
+                 show.legend = FALSE) +
+  geom_node_point(color = "lightblue", size = 2) +
+  geom_node_text(aes(label = name), repel = TRUE) +
+  theme_void()
+```
+
+
+
+```{r, warning=FALSE}
+colors <- c("Greens", "Blues", "Purples", "Reds", "Oranges", "Greys")
+  
+for ( i in seq_along(books)){
+docs <- Corpus(VectorSource(books[i]))
+docs <- tm_map(docs, content_transformer(tolower))
+# Remove numbers
+docs <- tm_map(docs, removeNumbers)
+# Remove english common stopwords
+docs <- tm_map(docs, removeWords, stopwords("english"))
+# Remove your own stop word
+# specify your stopwords as a character vector
+docs <-
+tm_map(docs, removeWords, c("said", "like", "though", "one"))
+# Remove punctuations
+docs <- tm_map(docs, removePunctuation)
+# Eliminate extra white spaces
+docs <- tm_map(docs, stripWhitespace)
+
+dtm <- TermDocumentMatrix(docs)
+m <- as.matrix(dtm)
+v <- sort(rowSums(m), decreasing = TRUE)
+d <- data.frame(word = names(v), freq = v)
+
+
+set.seed(1947)
+wordcloud(
+words = d$word,
+freq = d$freq,
+min.freq = 1,
+max.words = 200,
+random.order = FALSE,
+rot.per = 0.35,
+colors = brewer.pal(8, colors[i])
+)
+dev.copy(png, paste('plots/wordcloud_', titles[i], '.png', sep = ""))
+dev.off()
+
+}
+```
+
+
+### Season of Migration to the North
+```{r}
+terms <- c("woman", "man", "mustafa", "mahjoub", 
+                     "rayyes", "father", "village", "north")
+season_corr <- findAssocs(dtm, 
+           terms = terms,
+           corlimit = 0.3)
+
+
+for (i in 1:8) {
+  word = matrix(season_corr[[i]][1:10])
+  colnames(word) <- terms[i]
+  rownames(word) <- names(season_corr[[i]][1:10])
+  p <- ggcorrplot(word, method = "circle", 
+                  colors = c("pink", "orange", "red"),
+                  show.legend = F,
+                  outline.color = "orange")
+  plot(p)
+  dev.copy(png, paste('plots/season/',terms[i],'_associated_words.png', sep = ""))
+  dev.off()
+}
+
+```
+
+
+
